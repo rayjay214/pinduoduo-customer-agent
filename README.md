@@ -45,7 +45,7 @@
 - 纯商品卡但没有客户问题时，不让模型展开商品参数，优先追问客户想了解什么。
 - 缺少商品身份时，商品参数类问题不让模型猜，优先追问具体商品。
 - 未签收订单中出现“退款、坏了、退货”等售后诉求时，先询问客户是否收到，不直接按售后承诺处理。
-- 售后图片/视频、高风险售后问题、找不到充电口/插电口等场景可直接转人工。
+- 售后图片/视频、高风险售后问题场景可直接转人工。
 - 工具调用触发转人工后，Agent 直接返回固定客户话术，不再让模型二次改写，避免把内部工具格式输出给客户。
 
 ### 稳定性和安全
@@ -56,26 +56,6 @@
 - 夜间模式回复状态增加清理策略，降低长期运行的内存增长风险。
 - 会话 ID 构造加强，降低缺少 `recipient_uid` 时串话的风险。
 - 工具执行、消息队列、PDD 连接、登录、请求封装和资源释放增加更多边界测试。
-
-### 测试覆盖
-
-当前测试覆盖了：
-
-- RAG 场景判定和混合检索。
-- `search_knowledge` 工具兜底和转人工。
-- 商品族知识编辑、绑定链接、索引重建。
-- CustomerAgent 约束、工具循环、媒体上下文、会话 ID。
-- PDD 登录、连接、消息处理、API 请求头和转人工备注。
-- 配置、缓存、日志脱敏、资源管理、夜间模式、异步线程清理。
-
-最近验证记录：
-
-```powershell
-python -m pytest tests\test_knowledge_service_import.py tests\test_ui_event_loop_cleanup.py -q -p no:cacheprovider
-python -m pytest tests\test_knowledge_product_family.py tests\test_search_knowledge_tool.py -q -p no:cacheprovider
-```
-
-已通过：`10 passed`、`108 passed`。公开仓库不包含内部聊天记录、真实商品链接、商品族代号或知识库同步记录。
 
 ## 业务能力
 
@@ -247,51 +227,6 @@ uv run python scripts/build_win_exe.py --clean
 ```
 
 更多构建说明见 [scripts/README.md](scripts/README.md)。
-
-## 测试
-
-定向测试示例：
-
-```powershell
-uv run pytest tests/test_turn_context.py
-uv run pytest tests/test_search_knowledge_tool.py
-uv run pytest tests/test_knowledge_product_family.py
-```
-
-发布前建议至少检查：
-
-```powershell
-uv run python -m compileall Agent Channel Message bridge core database ui utils
-uv run pytest
-```
-
-## 不提交的本地数据
-
-以下内容可能包含账号、cookie、token、聊天记录、数据库、知识库草稿或运行日志，不应发布到公开仓库：
-
-- `config.json`
-- `temp/`
-- `logs/`
-- `runtime_logs/`
-- `runtime/` 中的分析数据、备份和人工审核文件
-- `user_data/`
-- `browser_data/`
-- 本地 `.db` 数据库文件
-- 临时 Excel 导入文件
-
-## 求职与合作
-
-这是一个围绕真实电商客服工作流做的二次开发项目，重点展示：
-
-- AI Agent 工具调用和受控回复链路。
-- RAG 检索、结构化知识库和客服业务规则落地。
-- PyQt6 桌面应用、拼多多渠道接入和自动化运营工具。
-- 复杂业务系统的审查、修复、测试和版本发布能力。
-
-如需交流、求职合作或项目二次开发，可以通过 GitHub 主页和本仓库 Issue 联系：
-
-- GitHub：[@mingkingss230-hash](https://github.com/mingkingss230-hash)
-- 仓库：`pinduoduo-customer-agent`
 
 ## License
 
