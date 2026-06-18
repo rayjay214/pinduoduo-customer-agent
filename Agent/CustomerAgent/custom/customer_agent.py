@@ -726,7 +726,6 @@ class CustomerAgent(Bot):
 
         has_order = bool(
             dependencies.get("order_id")
-            or dependencies.get("order_context_text")
             or order_scene in {"aftersale", "insale"}
         )
         if not has_order:
@@ -1477,8 +1476,8 @@ class CustomerAgent(Bot):
             shop_id = dependencies.get("shop_id")
             goods_id = dependencies.get("goods_id")
 
-            # 参数校验
-            if not shop_id or not goods_id or not customer_scene:
+            # 参数校验：goods_id 可选（没有则只查店铺通用知识）
+            if not shop_id or not customer_scene:
                 return
             if customer_scene not in {"presale", "insale", "aftersale"}:
                 return

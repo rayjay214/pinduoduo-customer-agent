@@ -133,9 +133,6 @@ def search_knowledge(params: SearchKnowledgeParams) -> str:
     knowledge_service = _knowledge_service()
     scene_key = _normalize_scene(params.scene, params.query)
 
-    if not params.goods_id:
-        return _transfer_to_human(params)
-
     scene_results = knowledge_service.search_scene_knowledge(
         scene=scene_key,
         shop_id=params.shop_id,

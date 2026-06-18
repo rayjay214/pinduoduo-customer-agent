@@ -60,7 +60,7 @@ class VectorRetriever:
     def __init__(self) -> None:
         self.embedding_url = os.getenv(
             "CUSTOMER_AGENT_EMBEDDING_URL",
-            os.getenv("CALLBACK_SERVER_EMBEDDING_URL", "http://127.0.0.1:8081/v1/embeddings"),
+            os.getenv("CALLBACK_SERVER_EMBEDDING_URL", "http://47.97.191.214:18081/v1/embeddings"),
         )
         self.embedding_model = os.getenv(
             "CUSTOMER_AGENT_EMBEDDING_MODEL",
