@@ -439,6 +439,11 @@ class SceneKnowledgeListDialog(QDialog):
         add_btn = PrimaryPushButton("添加")
         add_btn.clicked.connect(self._add_entry)
         header_layout.addWidget(add_btn)
+
+        import_btn = PushButton("导入")
+        import_btn.clicked.connect(self._import_entries)
+        header_layout.addWidget(import_btn)
+
         layout.addLayout(header_layout)
 
         self.table = TableWidget()
@@ -582,6 +587,90 @@ class SceneKnowledgeListDialog(QDialog):
             self._refresh_entries()
         else:
             QMessageBox.warning(self, "删除失败", "知识不存在")
+
+    def _import_entries(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "导入场景知识", "", "Excel 文件 (*.xls *.xlsx)",
+        )
+        if not filepath:
+            return
+
+        try:
+            rows, parse_skipped = self._parse_scene_excel(filepath)
+        except Exception as e:
+            QMessageBox.warning(self, "文件读取失败", str(e))
+            return
+
+        if not rows:
+            QMessageBox.information(self, "导入结果", f"文件中没有有效数据，跳过 {parse_skipped} 行")
+            return
+
+        success = 0
+        skipped = 0
+        for row in rows:
+            try:
+                new_id = self.knowledge_service.create_scene_knowledge(
+                    self.scene_key,
+                    self.shop_id,
+                    goods_id=self.goods_id,
+                    aliases=row["aliases"],
+                    answer=row["answer"],
+                    sub_intent=row["sub_intent"],
+                    section_title=row["section_title"],
+                    priority=row["priority"],
+                    enabled=True,
+                )
+                if new_id is not None:
+                    success += 1
+                else:
+                    skipped += 1
+            except Exception:
+                skipped += 1
+
+        total_skipped = parse_skipped + skipped
+        self._refresh_entries()
+        QMessageBox.information(
+            self, "导入完成",
+            f"成功导入 {success} 条，跳过 {total_skipped} 条"
+        )
+
+    @staticmethod
+    def _parse_scene_excel(filepath: str):
+        import pandas as pd
+        df = pd.read_excel(filepath, header=0, dtype=str)
+        df = df.fillna("")
+
+        rows = []
+        skipped = 0
+        for _, row in df.iterrows():
+            values = row.tolist()
+            while len(values) < 5:
+                values.append("")
+
+            section_title = str(values[0]).strip()
+            sub_intent = str(values[1]).strip()
+            aliases = str(values[2]).strip()
+            answer = str(values[3]).strip()
+            priority_str = str(values[4]).strip()
+
+            if not aliases or not answer:
+                skipped += 1
+                continue
+
+            try:
+                priority = int(priority_str) if priority_str else 0
+            except ValueError:
+                priority = 0
+
+            rows.append({
+                "section_title": section_title,
+                "sub_intent": sub_intent,
+                "aliases": aliases,
+                "answer": answer,
+                "priority": priority,
+            })
+
+        return rows, skipped
 
 
 class ProductFamilySceneKnowledgeDialog(QDialog):
