@@ -396,13 +396,13 @@ class SceneKnowledgeEditDialog(QDialog):
 
 
 class SceneKnowledgeListDialog(QDialog):
-    """某个商品某个场景的知识列表。"""
+    """某个商品/店铺通用场景的知识列表。"""
 
     def __init__(
         self,
         knowledge_service: KnowledgeService,
         shop_id: int,
-        goods_id: int,
+        goods_id: Optional[int],
         goods_name: str,
         scene_key: str,
         parent=None,
@@ -415,7 +415,10 @@ class SceneKnowledgeListDialog(QDialog):
         self.scene_key = scene_key
         self.entries: List[Dict] = []
         scene_label = {"presale": "售前", "insale": "售中", "aftersale": "售后"}.get(scene_key, scene_key)
-        self.setWindowTitle(f"{scene_label}知识 - {goods_id}")
+        if goods_id is None:
+            self.setWindowTitle(f"{scene_label}知识 - 店铺通用")
+        else:
+            self.setWindowTitle(f"{scene_label}知识 - {goods_id}")
         self.resize(1100, 720)
         self.setStyleSheet(SCENE_KNOWLEDGE_LIGHT_STYLE)
         self._init_ui()
@@ -423,12 +426,24 @@ class SceneKnowledgeListDialog(QDialog):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        title = QLabel(f"{self.goods_id}  {self.goods_name}")
-        layout.addWidget(title)
+
+        header_layout = QHBoxLayout()
+        if self.goods_id is None:
+            header_text = "店铺通用知识（对所有商品生效）"
+        else:
+            header_text = f"{self.goods_id}  {self.goods_name}"
+        title = QLabel(header_text)
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+
+        add_btn = PrimaryPushButton("添加")
+        add_btn.clicked.connect(self._add_entry)
+        header_layout.addWidget(add_btn)
+        layout.addLayout(header_layout)
 
         self.table = TableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["分类", "细分意图", "优先级", "问法", "答案", "操作"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["分类", "细分意图", "优先级", "问法", "答案", "编辑", "删除"])
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -436,7 +451,9 @@ class SceneKnowledgeListDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(5, 90)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(5, 70)
+        self.table.setColumnWidth(6, 70)
         self.table.cellDoubleClicked.connect(lambda row, _: self._edit_entry(row))
         layout.addWidget(self.table, 1)
 
@@ -449,6 +466,31 @@ class SceneKnowledgeListDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _add_entry(self):
+        dialog = SceneKnowledgeEditDialog({}, self.window())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        if not data["aliases"] or not data["answer"]:
+            QMessageBox.warning(self, "保存失败", "问法和答案不能为空")
+            return
+        new_id = self.knowledge_service.create_scene_knowledge(
+            self.scene_key,
+            self.shop_id,
+            goods_id=self.goods_id,
+            aliases=data["aliases"],
+            answer=data["answer"],
+            sub_intent=data["sub_intent"],
+            section_title=data["section_title"],
+            priority=data["priority"],
+            enabled=data["enabled"],
+        )
+        if new_id is not None:
+            self._refresh_entries()
+            QMessageBox.information(self, "添加成功", f"已添加，ID={new_id}")
+        else:
+            QMessageBox.warning(self, "保存失败", "场景无效")
 
     def _refresh_entries(self):
         self.entries = self.knowledge_service.list_scene_knowledge_by_goods(
@@ -478,6 +520,10 @@ class SceneKnowledgeListDialog(QDialog):
             edit_btn.clicked.connect(lambda _, r=row: self._edit_entry(r))
             self.table.setCellWidget(row, 5, edit_btn)
 
+            delete_btn = PushButton("删除")
+            delete_btn.clicked.connect(lambda _, r=row: self._delete_entry(r))
+            self.table.setCellWidget(row, 6, delete_btn)
+
         self.detail.clear()
 
     def _show_entry_detail(self, row: int, column: int):
@@ -498,7 +544,7 @@ class SceneKnowledgeListDialog(QDialog):
         if row < 0 or row >= len(self.entries):
             return
         entry = self.entries[row]
-        dialog = SceneKnowledgeEditDialog(entry, self)
+        dialog = SceneKnowledgeEditDialog(entry, self.window())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         data = dialog.get_data()
@@ -519,6 +565,23 @@ class SceneKnowledgeListDialog(QDialog):
             self._refresh_entries()
         else:
             QMessageBox.warning(self, "保存失败", "知识不存在或场景无效")
+
+    def _delete_entry(self, row: int):
+        if row < 0 or row >= len(self.entries):
+            return
+        entry = self.entries[row]
+        confirm = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除这条知识吗？\n\n{entry.get('section_title', '')} › {entry.get('sub_intent', '')}\n{entry.get('answer', '')[:80]}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        ok = self.knowledge_service.delete_scene_knowledge(self.scene_key, entry["id"])
+        if ok:
+            self._refresh_entries()
+        else:
+            QMessageBox.warning(self, "删除失败", "知识不存在")
 
 
 class ProductFamilySceneKnowledgeDialog(QDialog):
@@ -1097,6 +1160,36 @@ class KnowledgeUI(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
+        # ── 店铺通用知识入口 ──
+        store_section = QFrame()
+        store_section.setFrameShape(QFrame.Shape.StyledPanel)
+        store_section.setStyleSheet("QFrame { border: 1px solid #d8dce3; border-radius: 6px; padding: 8px; background: #f7f8fa; }")
+        store_layout = QVBoxLayout(store_section)
+        store_layout.setContentsMargins(12, 8, 12, 8)
+        store_layout.setSpacing(6)
+
+        store_title = QLabel("店铺通用知识（对所有商品生效）")
+        store_title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        store_layout.addWidget(store_title)
+
+        store_btn_layout = QHBoxLayout()
+        store_btn_layout.setSpacing(8)
+        for label, scene_key in (("售前知识", "presale"), ("售中知识", "insale"), ("售后知识", "aftersale")):
+            btn = PushButton(label)
+            btn.clicked.connect(lambda _, s=scene_key: self._open_store_scene_dialog(s))
+            store_btn_layout.addWidget(btn)
+        store_btn_layout.addStretch()
+        store_layout.addLayout(store_btn_layout)
+
+        layout.addWidget(store_section)
+
+        # ── 分割线：商品级知识 ──
+        sep_layout = QHBoxLayout()
+        sep_line = QLabel("──────────────────── 以下为商品级知识 ────────────────────")
+        sep_line.setStyleSheet("color: #999; font-size: 12px;")
+        sep_layout.addWidget(sep_line)
+        layout.addLayout(sep_layout)
+
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("商品"))
         self.scene_product_search = QLineEdit()
@@ -1365,6 +1458,18 @@ class KnowledgeUI(QWidget):
             btn_layout.addWidget(links_btn)
             cell_widget.setLayout(btn_layout)
             self.family_table.setCellWidget(row, 7, cell_widget)
+
+    def _open_store_scene_dialog(self, scene_key: str):
+        """打开店铺通用知识的场景管理。"""
+        dialog = SceneKnowledgeListDialog(
+            self.knowledge_service,
+            self.current_shop_id,
+            None,
+            "店铺通用",
+            scene_key,
+            self,
+        )
+        dialog.exec()
 
     def _open_scene_dialog(self, row: int, scene_key: str):
         """打开某个商品某个场景的知识明细。"""

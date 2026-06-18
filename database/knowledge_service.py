@@ -2880,10 +2880,10 @@ class KnowledgeService:
         self,
         scene: str,
         shop_id: int,
-        goods_id: int,
+        goods_id: Optional[int] = None,
         limit: int = 1000,
     ) -> List[Dict[str, Any]]:
-        """List editable scene knowledge rows for one product."""
+        """List editable scene knowledge rows for one product (or store-wide when goods_id is None)."""
         scene_key = str(scene or "").lower().strip()
         model = self._SCENE_MODEL_MAP.get(scene_key)
         if not model:
@@ -2891,11 +2891,13 @@ class KnowledgeService:
 
         db_shop_id = self._resolve_shop_id(shop_id)
         with self.get_session() as session:
+            where_conditions = [model.shop_id == db_shop_id]
+            if goods_id is None:
+                where_conditions.append(model.goods_id.is_(None))
+            else:
+                where_conditions.append(model.goods_id == goods_id)
             rows = list(session.scalars(
-                select(model).where(and_(
-                    model.shop_id == db_shop_id,
-                    model.goods_id == goods_id,
-                )).order_by(
+                select(model).where(and_(*where_conditions)).order_by(
                     model.priority.desc(),
                     model.section_title.asc(),
                     model.id.asc(),
@@ -2991,6 +2993,128 @@ class KnowledgeService:
                 row.updated_at = datetime.now()
             session.commit()
             return len(rows)
+
+    def _rebuild_embedding_for_entry(self, scene: str, entry_id: int) -> bool:
+        """Build and persist the embedding vector for a single scene knowledge entry."""
+        scene_key = str(scene or "").lower().strip()
+        model = self._SCENE_MODEL_MAP.get(scene_key)
+        table_name = self._SCENE_TABLE_MAP.get(scene_key)
+        if not model or not table_name:
+            return False
+
+        import struct
+        import requests as _requests
+
+        with self.get_session() as session:
+            entry = session.get(model, entry_id)
+            if not entry:
+                return False
+            embed_text = self._build_embedding_text(entry)
+            if not embed_text.strip():
+                return False
+
+            try:
+                resp = _requests.post(
+                    self.vector_retriever.embedding_url,
+                    json={"input": [embed_text], "model": self.vector_retriever.embedding_model},
+                    timeout=max(self.vector_retriever.timeout_seconds, 60),
+                )
+                resp.raise_for_status()
+                vec = resp.json()["data"][0]["embedding"]
+            except Exception as exc:
+                logger.warning(f"rebuild_embedding: {scene}/{entry_id} failed: {exc}")
+                return False
+
+            blob = struct.pack(f"{len(vec)}f", *vec)
+            c_hash = self._content_hash(embed_text)
+
+            session.query(SceneKnowledgeEmbedding).filter(
+                SceneKnowledgeEmbedding.scene == scene_key,
+                SceneKnowledgeEmbedding.knowledge_table == table_name,
+                SceneKnowledgeEmbedding.knowledge_id == entry_id,
+            ).delete()
+
+            row = SceneKnowledgeEmbedding(
+                scene=scene_key,
+                knowledge_table=table_name,
+                knowledge_id=entry_id,
+                shop_id=entry.shop_id,
+                goods_id=entry.goods_id,
+                embedding_text=embed_text,
+                embedding=blob,
+                embedding_model=self.vector_retriever.embedding_model,
+                embedding_dim=len(vec),
+                content_hash=c_hash,
+            )
+            session.add(row)
+            session.commit()
+            return True
+
+    def create_scene_knowledge(
+        self,
+        scene: str,
+        shop_id: int,
+        goods_id: Optional[int] = None,
+        sub_intent: str = "",
+        aliases: str = "",
+        answer: str = "",
+        section_title: str = "",
+        tags: str = "",
+        priority: int = 0,
+        enabled: bool = True,
+    ) -> Optional[int]:
+        """Create a new scene knowledge entry. Returns the new entry ID or None on failure."""
+        scene_key = str(scene or "").lower().strip()
+        model = self._SCENE_MODEL_MAP.get(scene_key)
+        if not model:
+            logger.warning(f"create_scene_knowledge: unknown scene '{scene}'")
+            return None
+
+        db_shop_id = self._resolve_shop_id(shop_id)
+        with self.get_session() as session:
+            now = datetime.now()
+            row = model(
+                shop_id=db_shop_id,
+                goods_id=goods_id,
+                sub_intent=sub_intent or "",
+                aliases=aliases or "",
+                answer=answer or "",
+                section_title=section_title or "",
+                tags=tags or "",
+                priority=int(priority),
+                enabled=bool(enabled),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            session.flush()
+            new_id = row.id
+            session.commit()
+
+        self._rebuild_embedding_for_entry(scene_key, new_id)
+        return new_id
+
+    def delete_scene_knowledge(self, scene: str, entry_id: int) -> bool:
+        """Delete one scene knowledge entry by ID (and its embedding)."""
+        scene_key = str(scene or "").lower().strip()
+        model = self._SCENE_MODEL_MAP.get(scene_key)
+        table_name = self._SCENE_TABLE_MAP.get(scene_key)
+        if not model:
+            return False
+
+        with self.get_session() as session:
+            row = session.get(model, entry_id)
+            if not row:
+                return False
+            session.delete(row)
+            if table_name:
+                session.query(SceneKnowledgeEmbedding).filter(
+                    SceneKnowledgeEmbedding.scene == scene_key,
+                    SceneKnowledgeEmbedding.knowledge_table == table_name,
+                    SceneKnowledgeEmbedding.knowledge_id == entry_id,
+                ).delete()
+            session.commit()
+            return True
 
     def _rank_scene_entries(
         self,
