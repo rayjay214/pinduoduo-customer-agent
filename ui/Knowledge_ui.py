@@ -395,6 +395,55 @@ class SceneKnowledgeEditDialog(QDialog):
         }
 
 
+class SceneKnowledgeImportWorker(QThread):
+    """场景知识导入工作线程"""
+
+    progress_updated = pyqtSignal(int, int)
+    import_finished = pyqtSignal(int, int)
+
+    def __init__(
+        self,
+        knowledge_service: KnowledgeService,
+        scene_key: str,
+        shop_id: int,
+        goods_id: Optional[int],
+        rows: List[Dict],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.knowledge_service = knowledge_service
+        self.scene_key = scene_key
+        self.shop_id = shop_id
+        self.goods_id = goods_id
+        self.rows = rows
+
+    def run(self):
+        success = 0
+        skipped = 0
+        total = len(self.rows)
+        for i, row in enumerate(self.rows):
+            try:
+                new_id = self.knowledge_service.create_scene_knowledge(
+                    self.scene_key,
+                    self.shop_id,
+                    goods_id=self.goods_id,
+                    aliases=row["aliases"],
+                    answer=row["answer"],
+                    sub_intent=row["sub_intent"],
+                    section_title=row["section_title"],
+                    priority=row["priority"],
+                    enabled=True,
+                )
+                if new_id is not None:
+                    success += 1
+                else:
+                    skipped += 1
+            except Exception:
+                skipped += 1
+            self.progress_updated.emit(i + 1, total)
+        self.import_finished.emit(success, skipped)
+
+
 class SceneKnowledgeListDialog(QDialog):
     """某个商品/店铺通用场景的知识列表。"""
 
@@ -440,11 +489,21 @@ class SceneKnowledgeListDialog(QDialog):
         add_btn.clicked.connect(self._add_entry)
         header_layout.addWidget(add_btn)
 
-        import_btn = PushButton("导入")
-        import_btn.clicked.connect(self._import_entries)
-        header_layout.addWidget(import_btn)
+        self.import_btn = PushButton("导入")
+        self.import_btn.clicked.connect(self._import_entries)
+        header_layout.addWidget(self.import_btn)
 
         layout.addLayout(header_layout)
+
+        # 导入进度条
+        self.import_progress_bar = QProgressBar()
+        self.import_progress_bar.setVisible(False)
+        self.import_progress_label = QLabel("")
+        self.import_progress_label.setVisible(False)
+        progress_layout = QHBoxLayout()
+        progress_layout.addWidget(self.import_progress_label)
+        progress_layout.addWidget(self.import_progress_bar)
+        layout.addLayout(progress_layout)
 
         self.table = TableWidget()
         self.table.setColumnCount(7)
@@ -605,34 +664,42 @@ class SceneKnowledgeListDialog(QDialog):
             QMessageBox.information(self, "导入结果", f"文件中没有有效数据，跳过 {parse_skipped} 行")
             return
 
-        success = 0
-        skipped = 0
-        for row in rows:
-            try:
-                new_id = self.knowledge_service.create_scene_knowledge(
-                    self.scene_key,
-                    self.shop_id,
-                    goods_id=self.goods_id,
-                    aliases=row["aliases"],
-                    answer=row["answer"],
-                    sub_intent=row["sub_intent"],
-                    section_title=row["section_title"],
-                    priority=row["priority"],
-                    enabled=True,
-                )
-                if new_id is not None:
-                    success += 1
-                else:
-                    skipped += 1
-            except Exception:
-                skipped += 1
+        # 显示进度条
+        self.import_progress_bar.setVisible(True)
+        self.import_progress_label.setVisible(True)
+        self.import_progress_bar.setMaximum(len(rows))
+        self.import_progress_bar.setValue(0)
+        self.import_progress_label.setText(f"正在导入 0/{len(rows)}")
+        self.import_btn.setEnabled(False)
 
-        total_skipped = parse_skipped + skipped
-        self._refresh_entries()
-        QMessageBox.information(
-            self, "导入完成",
-            f"成功导入 {success} 条，跳过 {total_skipped} 条"
+        # 后台线程导入
+        self._import_worker = SceneKnowledgeImportWorker(
+            knowledge_service=self.knowledge_service,
+            scene_key=self.scene_key,
+            shop_id=self.shop_id,
+            goods_id=self.goods_id,
+            rows=rows,
+            parent=self,
         )
+
+        def on_progress(current: int, total: int):
+            self.import_progress_bar.setValue(current)
+            self.import_progress_label.setText(f"正在导入 {current}/{total}")
+
+        def on_finished(success: int, skipped: int):
+            self.import_progress_bar.setVisible(False)
+            self.import_progress_label.setVisible(False)
+            self.import_btn.setEnabled(True)
+            total_skipped = parse_skipped + skipped
+            self._refresh_entries()
+            QMessageBox.information(
+                self, "导入完成",
+                f"成功导入 {success} 条，跳过 {total_skipped} 条"
+            )
+
+        self._import_worker.progress_updated.connect(on_progress)
+        self._import_worker.import_finished.connect(on_finished)
+        self._import_worker.start()
 
     @staticmethod
     def _parse_scene_excel(filepath: str):
